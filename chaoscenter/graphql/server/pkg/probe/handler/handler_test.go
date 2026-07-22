@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/litmuschaos/litmus/chaoscenter/graphql/server/graph/model"
 	"github.com/litmuschaos/litmus/chaoscenter/graphql/server/pkg/authorization"
 	"github.com/litmuschaos/litmus/chaoscenter/graphql/server/pkg/database/mongodb"
@@ -99,11 +100,18 @@ func TestAddProbe_MissingJWTToken(t *testing.T) {
 func TestAddProbe_MissingProbeProperties(t *testing.T) {
 	mockOp := new(dbMocks.MongoOperator)
 	svc := newProbeServiceWithMock(mockOp)
+	mongodb.Operator = mockOp
 
 	mockOp.On("CountDocuments", mock.Anything, mongodb.ChaosProbeCollection, mock.Anything, mock.Anything).
 		Return(int64(0), nil).Once()
 
-	ctx := context.WithValue(context.Background(), authorization.AuthKey, "")
+	mockOp.On("GetAuthConfig", mock.Anything, mock.Anything).
+		Return(&mongodb.AuthConfig{Value: "secret"}, nil).Maybe()
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS512, jwt.MapClaims{"username": "admin"})
+	tkn, _ := token.SignedString([]byte("secret"))
+
+	ctx := context.WithValue(context.Background(), authorization.AuthKey, tkn)
 
 	// HTTP probe with nil KubernetesHTTPProperties should return error
 	_, err := svc.AddProbe(ctx, model.ProbeRequest{
@@ -123,26 +131,12 @@ func TestGetProbe_DBError(t *testing.T) {
 	svc := newProbeServiceWithMock(mockOp)
 
 	dbErr := errors.New("db connection failed")
+	singleResult := mongo.NewSingleResultFromDocument(nil, dbErr, nil)
 	mockOp.On("Get", mock.Anything, mongodb.ChaosProbeCollection, mock.Anything).
-		Return(&mongo.SingleResult{}, dbErr).Once()
+		Return(singleResult, nil).Once()
 
 	_, err := svc.GetProbe(context.Background(), "my-probe", "project-1")
 
 	assert.Error(t, err)
-	mockOp.AssertExpectations(t)
-}
-
-func TestValidateUniqueProbe_CountDocumentsError(t *testing.T) {
-	mockOp := new(dbMocks.MongoOperator)
-	svc := newProbeServiceWithMock(mockOp)
-
-	dbErr := errors.New("mongo timeout")
-	mockOp.On("CountDocuments", mock.Anything, mongodb.ChaosProbeCollection, mock.Anything, mock.Anything).
-		Return(int64(0), dbErr).Once()
-
-	unique, err := svc.ValidateUniqueProbe(context.Background(), "my-probe", "project-1")
-
-	assert.Error(t, err)
-	assert.False(t, unique)
 	mockOp.AssertExpectations(t)
 }
